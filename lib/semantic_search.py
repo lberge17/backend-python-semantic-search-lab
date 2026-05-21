@@ -1,20 +1,7 @@
-"""
-Semantic Search Lab Starter Code
-
-You will build a small semantic retrieval workflow that prepares documents,
-embeds documents, embeds a query, compares similarity scores, and returns
-ranked top-k results with source information.
-
-The test suite uses a deterministic fake embedding model so grading does not
-depend on Ollama, internet access, or a specific model output. Your code should
-work with any object that has an .embed(text) method returning a list of numbers.
-
-Optional: You can use OllamaEmbeddingModel locally to try your workflow with
-a real embedding model after your pytest tests pass.
-"""
-
 from __future__ import annotations
 
+import math
+from copy import deepcopy
 from typing import Any, Protocol
 
 
@@ -81,30 +68,12 @@ DEFAULT_DOCUMENTS = [
 
 
 class EmbeddingModel(Protocol):
-    """Protocol for any embedding model used by the retrieval workflow."""
-
     def embed(self, text: str) -> list[float]:
         """Return a vector embedding for the provided text."""
         ...
 
 
 class OllamaEmbeddingModel:
-    """
-    Optional local embedding model wrapper.
-
-    This class is not required by the pytest suite. It is provided so you can
-    try the same workflow locally with Ollama after your core functions work.
-
-    Example:
-        embedder = OllamaEmbeddingModel(model_name="embeddinggemma")
-        results = semantic_search(
-            "Why does the mobile app say my token is expired?",
-            DEFAULT_DOCUMENTS,
-            embedder,
-            top_k=3,
-        )
-    """
-
     def __init__(self, model_name: str = "embeddinggemma"):
         self.model_name = model_name
 
@@ -125,75 +94,128 @@ class OllamaEmbeddingModel:
 
 
 def build_search_text(document: dict[str, Any]) -> str:
-    """
-    Build the text that should be sent to the embedding model for one document.
 
-    Requirements:
-    - Include the document title.
-    - Include the document category.
-    - Include the document summary.
-    - Include tags when available.
-    - Return one clean, non-empty string.
+    if not isinstance(document, dict):
+        raise ValueError("Document must be a dictionary.")
 
-    Why:
-    Embedding only the title may lose important meaning. Embedding title,
-    category, summary, and tags gives the model more context.
-    """
-    raise NotImplementedError("TODO: Build searchable text from document fields.")
+    parts: list[str] = []
+
+    for field in ("title", "category", "summary"):
+        value = document.get(field)
+
+        if value is not None and str(value).strip():
+            parts.append(f"{field}: {str(value).strip()}")
+
+    tags = document.get("tags")
+
+    if tags:
+        if isinstance(tags, (list, tuple, set)):
+            tag_text = ", ".join(
+                str(tag).strip() for tag in tags if str(tag).strip()
+            )
+        else:
+            tag_text = str(tags).strip()
+
+        if tag_text:
+            parts.append(f"tags: {tag_text}")
+
+    if not parts:
+        raise ValueError("Document does not contain searchable text.")
+
+    return " | ".join(parts)
 
 
 def prepare_documents(raw_documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """
-    Validate and prepare raw documents for retrieval.
+    if not isinstance(raw_documents, list):
+        raise ValueError("raw_documents must be a list of dictionaries.")
 
-    Requirements:
-    - Accept a list of document dictionaries.
-    - Validate that each document includes REQUIRED_DOCUMENT_FIELDS.
-    - Return a new list of document dictionaries.
-    - Do not mutate the original input documents.
-    - Add a 'text' field created by build_search_text(document).
-    - Preserve useful metadata: id, title, category, summary, source, and tags.
+    if not raw_documents:
+        raise ValueError("raw_documents must include at least one document.")
 
-    Raises:
-    - ValueError if a required field is missing.
-    - ValueError if raw_documents is empty.
-    """
-    raise NotImplementedError("TODO: Validate and prepare documents.")
+    prepared_documents: list[dict[str, Any]] = []
+
+    for index, document in enumerate(raw_documents):
+        if not isinstance(document, dict):
+            raise ValueError(f"Document at index {index} must be a dictionary.")
+
+        missing_fields = [
+            field
+            for field in REQUIRED_DOCUMENT_FIELDS
+            if field not in document or document[field] is None
+        ]
+
+        if missing_fields:
+            missing_text = ", ".join(missing_fields)
+            raise ValueError(
+                f"Document at index {index} is missing required field(s): "
+                f"{missing_text}"
+            )
+
+        prepared_document = deepcopy(document)
+        prepared_document["text"] = build_search_text(prepared_document)
+        prepared_documents.append(prepared_document)
+
+    return prepared_documents
 
 
 def cosine_similarity(vector_a: list[float], vector_b: list[float]) -> float:
-    """
-    Compute cosine similarity between two vectors.
 
-    Requirements:
-    - Return a float.
-    - Return 1.0 for identical non-zero vectors.
-    - Return 0.0 for orthogonal vectors.
-    - Return 0.0 if either vector has zero magnitude.
-    - Raise ValueError if the vectors have different dimensions.
+    if len(vector_a) != len(vector_b):
+        raise ValueError("Vectors must have the same number of dimensions.")
 
-    Do not use numpy for this lab. Implement the math with basic Python.
-    """
-    raise NotImplementedError("TODO: Compute cosine similarity.")
+    if len(vector_a) == 0:
+        return 0.0
+
+    dot_product = 0.0
+    magnitude_a = 0.0
+    magnitude_b = 0.0
+
+    for value_a, value_b in zip(vector_a, vector_b):
+        numeric_a = float(value_a)
+        numeric_b = float(value_b)
+
+        dot_product += numeric_a * numeric_b
+        magnitude_a += numeric_a * numeric_a
+        magnitude_b += numeric_b * numeric_b
+
+    magnitude_a = math.sqrt(magnitude_a)
+    magnitude_b = math.sqrt(magnitude_b)
+
+    if magnitude_a == 0.0 or magnitude_b == 0.0:
+        return 0.0
+
+    return dot_product / (magnitude_a * magnitude_b)
 
 
 def embed_documents(
     prepared_documents: list[dict[str, Any]],
     embedding_model: EmbeddingModel,
 ) -> list[dict[str, Any]]:
-    """
-    Embed each prepared document.
 
-    Requirements:
-    - Accept documents that already include a 'text' field.
-    - Call embedding_model.embed(document["text"]) once per document.
-    - Return a new list of document dictionaries.
-    - Add an 'embedding' field to each returned document.
-    - Preserve metadata needed for source traceability.
+    if not isinstance(prepared_documents, list):
+        raise ValueError("prepared_documents must be a list of dictionaries.")
 
-    Do not mutate the input documents.
-    """
-    raise NotImplementedError("TODO: Embed each prepared document.")
+    embedded_documents: list[dict[str, Any]] = []
+
+    for index, document in enumerate(prepared_documents):
+        if not isinstance(document, dict):
+            raise ValueError(f"Document at index {index} must be a dictionary.")
+
+        text = document.get("text")
+
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(
+                f"Prepared document at index {index} must include a non-empty "
+                "'text' field."
+            )
+
+        embedding = embedding_model.embed(text)
+
+        embedded_document = deepcopy(document)
+        embedded_document["embedding"] = list(embedding)
+        embedded_documents.append(embedded_document)
+
+    return embedded_documents
 
 
 def rank_documents(
@@ -202,30 +224,45 @@ def rank_documents(
     embedding_model: EmbeddingModel,
     top_k: int = 3,
 ) -> list[dict[str, Any]]:
-    """
-    Rank embedded documents against a user query.
 
-    Requirements:
-    - Validate that query is a non-empty string.
-    - Validate that top_k is a positive integer.
-    - Embed the query with embedding_model.embed(query).
-    - Compare the query embedding to every document embedding.
-    - Add a 'score' field to each returned result.
-    - Sort results by score from highest to lowest.
-    - Return only the top_k results.
-    - Preserve source metadata: id, title, category, summary, and source.
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("query must be a non-empty string.")
 
-    The returned result format should look like:
-        {
-            "id": "DOC-102",
-            "title": "Fixing Invalid API Authentication Tokens",
-            "category": "api",
-            "summary": "...",
-            "source": "platform-docs/api/authentication-tokens",
-            "score": 0.87
+    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+        raise ValueError("top_k must be a positive integer.")
+
+    if not isinstance(embedded_documents, list):
+        raise ValueError("embedded_documents must be a list of dictionaries.")
+
+    query_embedding = embedding_model.embed(query.strip())
+
+    ranked_results: list[dict[str, Any]] = []
+
+    for index, document in enumerate(embedded_documents):
+        if not isinstance(document, dict):
+            raise ValueError(f"Document at index {index} must be a dictionary.")
+
+        if "embedding" not in document:
+            raise ValueError(
+                f"Embedded document at index {index} is missing an 'embedding' field."
+            )
+
+        score = cosine_similarity(query_embedding, document["embedding"])
+
+        result = {
+            "id": document.get("id"),
+            "title": document.get("title"),
+            "category": document.get("category"),
+            "summary": document.get("summary"),
+            "source": document.get("source"),
+            "score": float(score),
         }
-    """
-    raise NotImplementedError("TODO: Rank documents by query similarity.")
+
+        ranked_results.append(result)
+
+    ranked_results.sort(key=lambda result: result["score"], reverse=True)
+
+    return ranked_results[:top_k]
 
 
 def semantic_search(
@@ -234,29 +271,19 @@ def semantic_search(
     embedding_model: EmbeddingModel,
     top_k: int = 3,
 ) -> list[dict[str, Any]]:
-    """
-    Run the full semantic retrieval workflow.
 
-    Required sequence:
-    1. Prepare documents.
-    2. Embed documents.
-    3. Embed the query.
-    4. Compute similarity scores.
-    5. Rank results.
-    6. Return top-k results with source metadata.
+    prepared_documents = prepare_documents(raw_documents)
+    embedded_documents = embed_documents(prepared_documents, embedding_model)
 
-    This function should orchestrate the smaller helper functions.
-    """
-    raise NotImplementedError("TODO: Run the full semantic search workflow.")
+    return rank_documents(
+        query=query,
+        embedded_documents=embedded_documents,
+        embedding_model=embedding_model,
+        top_k=top_k,
+    )
 
 
 def main() -> None:
-    """
-    Optional manual run.
-
-    This is not used by pytest. It is here so you can test your workflow locally
-    after implementing the required functions.
-    """
     embedder = OllamaEmbeddingModel()
     query = "Why does the mobile app say my token is expired?"
 
